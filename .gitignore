@@ -1,0 +1,29 @@
+# Add .gitignore contents
+cat << 'EOF' > .gitignore
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.local
+
+# Build outputs
+dist/
+build/
+
+# OS files
+.DS_Store
+
+# Logs
+*.log
+
+# Docker
+.docker/
+
+# IDE
+.idea/
+.vscode/
+
+# Test coverage
+coverage/
+EOF
