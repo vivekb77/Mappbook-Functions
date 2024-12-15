@@ -1,0 +1,85 @@
+
+  # Create ECR repository
+aws ecr create-repository --repository-name flipbook-lambda --image-scanning-configuration scanOnPush=true
+
+
+docker buildx build --platform linux/amd64 -t flipbook-lambda .
+
+# Login to ECR
+aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 442426858133.dkr.ecr.us-east-1.amazonaws.com
+
+# Tag the image
+
+docker tag flipbook-lambda:latest 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+
+# Push the image
+docker push 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+
+# Create Lambda function (adjust memory and timeout as needed)
+aws lambda create-function \
+  --function-name flipbook-video \
+  --package-type Image \
+  --code ImageUri=442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest \
+  --role arn:aws:iam::442426858133:role/flipbook-lambda-role \
+  --memory-size 3000 \
+  --timeout 300 \
+  --environment "Variables={}" \
+  --architectures x86_64
+
+
+
+# PROD updating steps - after updating index or any other file 1. build docker image and push to registry 2. udpate the fuction to use new image from registry
+  docker buildx build \
+  --builder lambda-builder \
+  --platform linux/amd64 \
+  --push \
+  -t 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest \
+  --provenance=false \
+  .
+
+aws lambda update-function-configuration \
+  --function-name flipbook-video \
+  --timeout 900 \
+  --memory-size 2048
+
+# update the function on every change
+aws lambda update-function-code \
+  --function-name flipbook-video \
+  --image-uri 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+
+
+
+Spent 4 days to make browser and ffmpeg work on cloud, points going forward to avoid delays
+As a senior DevOps engineer, here are the key lessons from the previous failures to help avoid similar issues in the future:
+
+1. Package Manager Issues:
+- Using `yum install ffmpeg` directly doesn't work because FFmpeg isn't in the default AL2 repositories
+- Adding EPEL repository through `epel-release` failed because it's not compatible with AWS Lambda's base image
+- Using `.x86_64` architecture suffix in package names caused conflicts
+- `amazon-linux-extras` doesn't work in Lambda's container environment
+
+2. Build Process Issues:
+- Multi-stage builds were overcomplicated for this use case
+- Compiling from source is risky in Lambda environment due to missing build tools
+- Development tools installation bloats the image unnecessarily
+
+3. Lambda Container Specifics:
+- Lambda base image (`public.ecr.aws/lambda/nodejs:18`) has limited repository access
+- Lambda layers can't be used with container images
+- The base image has a minimal package set, requiring careful dependency management
+
+4. What Finally Worked:
+- Using pre-compiled static binaries from a reliable source (johnvansickle.com)
+- Simple, direct installation approach without complex package management
+- Minimal dependency installation for Chrome
+- Proper cleanup and verification steps
+
+5. Best Practices for Future:
+- Start with the simplest approach (static binaries) before trying complex solutions
+- Test package installations individually to identify specific failures
+- Verify binary compatibility with Lambda's environment
+- Keep the build process as simple as possible
+- Include verification steps in the Dockerfile
+- Clean up unnecessary files to reduce image size
+
+These insights should help streamline future Lambda container builds and avoid common pitfalls with binary/dependency installations.

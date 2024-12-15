@@ -127,12 +127,7 @@ async function createPage(browser) {
   await page.setRequestInterception(true);
   
   page.on('request', (request) => {
-    const resourceType = request.resourceType();
-    if (resourceType === 'image' || resourceType === 'font' || resourceType === 'media') {
-      request.abort();
-    } else {
-      request.continue();
-    }
+    request.continue();
   });
   
   return page;
@@ -371,12 +366,27 @@ async function processVideo(framesDir, outputPath, fps) {
 
 
 module.exports.handler = async (event) => {
-  const { locationCount, mappbook_user_id } = event;
+  
+  if (!event.body || typeof event.body !== 'string') {
+    return {
+      statusCode: 400,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        success: false,
+        error: 'Missing or invalid request body'
+      })
+    };
+  }
+
+  const { locationCount, mappbook_user_id } = JSON.parse(event.body);
   const baseDir = getWorkingDirectory();
   const framesDir = path.join(baseDir, 'frames');
   const outputPath = path.join(baseDir, 'output.mp4');
   let browser = null;
   let page = null;
+
 
   try {
     fs.mkdirSync(framesDir, { recursive: true, mode: 0o777 });
