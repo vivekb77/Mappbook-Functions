@@ -1,57 +1,36 @@
-# Stage 1: Use public ffmpeg image to get the binaries
-FROM --platform=linux/amd64 jrottenberg/ffmpeg:4.4-ubuntu2004 as ffmpeg
+# Simplified Dockerfile focusing on essential dependencies
+FROM public.ecr.aws/lambda/nodejs:18
 
-# Stage 2: Final Lambda image
-FROM --platform=linux/amd64 public.ecr.aws/lambda/nodejs:18
-
-# Copy ffmpeg binaries from the ffmpeg image
-COPY --from=ffmpeg /usr/local/bin/ffmpeg /usr/local/bin/
-COPY --from=ffmpeg /usr/local/bin/ffprobe /usr/local/bin/
-
-# Install system dependencies for Chrome/Puppeteer
-RUN yum update -y && \
-    yum install -y \
-    alsa-lib.x86_64 \
-    atk.x86_64 \
-    cups-libs.x86_64 \
-    gtk3.x86_64 \
-    ipa-gothic-fonts \
+# Install only the absolutely necessary Chrome dependencies
+RUN yum install -y \
+    pango.x86_64 \
     libXcomposite.x86_64 \
     libXcursor.x86_64 \
     libXdamage.x86_64 \
     libXext.x86_64 \
     libXi.x86_64 \
-    libXrandr.x86_64 \
-    libXScrnSaver.x86_64 \
     libXtst.x86_64 \
-    pango.x86_64 \
-    xorg-x11-fonts-100dpi \
-    xorg-x11-fonts-75dpi \
-    xorg-x11-fonts-cyrillic \
-    xorg-x11-fonts-misc \
-    xorg-x11-fonts-Type1 \
-    xorg-x11-utils \
+    cups-libs.x86_64 \
+    libXScrnSaver.x86_64 \
+    libXrandr.x86_64 \
+    alsa-lib.x86_64 \
+    atk.x86_64 \
+    gtk3.x86_64 \
     nss.x86_64 \
     && yum clean all \
     && rm -rf /var/cache/yum
 
-# Set working directory
+# No need to create persistent directories
 WORKDIR ${LAMBDA_TASK_ROOT}
 
-# Copy package files
 COPY package*.json ./
+RUN npm ci --only=production
 
-# Install production dependencies
-RUN npm install --production
-
-# Copy function code
 COPY index.js ./
 
-# Set environment variables
-ENV AWS_EXECUTION_ENV=AWS_Lambda_nodejs18.x
+# Minimal environment configuration
 ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV CHROMIUM_PATH="/var/task/node_modules/@sparticuz/chromium/bin"
+ENV NODE_OPTIONS="--max-old-space-size=2048"
+ENV AWS_LAMBDA_FUNCTION_MEMORY_SIZE=2048
 
-# Lambda specific settings
-ENTRYPOINT [ "/lambda-entrypoint.sh" ]
 CMD [ "index.handler" ]

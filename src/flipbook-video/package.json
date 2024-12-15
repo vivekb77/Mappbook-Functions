@@ -4,9 +4,9 @@
   "description": "Lambda function for creating flipbook videos",
   "main": "index.js",
   "dependencies": {
-    "@sparticuz/chromium": "^118.0.0",
     "@supabase/supabase-js": "^2.39.0",
     "fluent-ffmpeg": "^2.1.2",
-    "puppeteer-core": "^21.5.0"
+    "chrome-aws-lambda": "^10.1.0",
+    "puppeteer-core": "^10.1.0"
   }
 }
