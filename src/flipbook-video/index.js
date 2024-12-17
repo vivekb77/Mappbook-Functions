@@ -20,7 +20,7 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const MEMORY_LIMIT = parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || '1024', 10);
 const MEMORY_BUFFER = 128; // MB to keep free
 const FPS = 24; // Frames per second
-const SECONDS_PER_SPREAD = 2; // Time to show each spread
+const SECONDS_PER_SPREAD = 2.5; // Time to show each spread
 
 class ResourceMonitor {
   constructor(warningThreshold = 0.8) {
@@ -80,24 +80,6 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
       visible: true
     });
 
-    const woodenBounds = await woodenElement.boundingBox();
-    if (!woodenBounds) {
-      throw new Error('Could not get wooden background bounds');
-    }
-
-    // Calculate width and height ensuring even numbers
-    const width = Math.floor(woodenBounds.width / 2) * 2;
-    const height = Math.floor(woodenBounds.height / 2) * 2;
-
-    // Create clip configuration
-    const clipConfig = {
-      x: woodenBounds.x,
-      y: woodenBounds.y,
-      width,
-      height
-    };
-
-    console.log('Wooden background dimensions:', clipConfig);
 
     // Create FFmpeg command with wooden background dimensions
     const ffmpegCommand = ffmpeg()
@@ -105,16 +87,16 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
       .inputFormat('jpeg_pipe')
       .inputFPS(FPS)
       .videoCodec('libx264')
-      .size(`${clipConfig.width}x${clipConfig.height}`) // Set size to match wooden background
+      // .size(`${clipConfig.width}x${clipConfig.height}`) // Set size to match wooden background
       .outputOptions([
-        '-preset ultrafast',
-        '-pix_fmt yuv420p',
-        '-profile:v baseline',
-        '-level 3.0',
-        '-maxrate 2000k',
-        '-bufsize 4000k',
-        '-crf 28',
-        '-g 14'
+      '-preset medium',     // Change from ultrafast to medium for better quality
+    '-pix_fmt yuv420p',
+    '-profile:v high',    // Change from baseline to high profile
+    '-level 4.0',         // Increase level
+    '-maxrate 4000k',     // Increase from 2000k
+    '-bufsize 8000k',     // Increase from 4000k
+    '-crf 23',           // Lower CRF value (23 instead of 28) for better quality
+    '-g 14'
       ])
       .output(outputPath);
 
@@ -150,10 +132,15 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
         if (!monitor.check()) break;
 
         // Screenshot only the wooden background area
-        const screenshot = await page.screenshot({
+        // const screenshot = await page.screenshot({
+        //   type: 'jpeg',
+        //   quality: 80,
+        //   clip: clipConfig
+        // });
+
+        const screenshot = await woodenElement.screenshot({
           type: 'jpeg',
-          quality: 80,
-          clip: clipConfig
+          quality: 100
         });
 
         const success = stream.write(screenshot);
