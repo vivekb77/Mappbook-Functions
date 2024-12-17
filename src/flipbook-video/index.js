@@ -19,7 +19,8 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // Configure limits
 const MEMORY_LIMIT = parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || '1024', 10);
 const MEMORY_BUFFER = 128; // MB to keep free
-const MAX_FRAMES = 300; // Limit total frames
+const FPS = 24; // Frames per second
+const SECONDS_PER_SPREAD = 2; // Time to show each spread
 
 class ResourceMonitor {
   constructor(warningThreshold = 0.8) {
@@ -42,56 +43,17 @@ class ResourceMonitor {
     }
 
     this.frameCount++;
-    if (this.frameCount > MAX_FRAMES) {
-      throw new Error(`Frame limit exceeded: ${this.frameCount}`);
-    }
-
     return true;
   }
 }
 
-async function captureVideo(url, outputPath) {
+async function captureVideo(url, outputPath, locationCount, isPremium) {
   let browser = null;
   let page = null;
   const monitor = new ResourceMonitor();
   const stream = new PassThrough();
 
   try {
-    // Create FFmpeg command with proper event handling
-    const ffmpegCommand = ffmpeg()
-      .input(stream)
-      .inputFormat('jpeg_pipe')
-      .fps(10)
-      .size('1280x720')
-      .videoCodec('libx264')
-      .outputOptions([
-        '-preset ultrafast',
-        '-pix_fmt yuv420p',
-        '-profile:v baseline',
-        '-level 3.0',
-        '-maxrate 2000k',
-        '-bufsize 4000k',
-        '-crf 28',
-        '-g 10'
-      ])
-      .output(outputPath);
-
-    // Create a promise to track FFmpeg completion
-    const ffmpegPromise = new Promise((resolve, reject) => {
-      ffmpegCommand
-        .on('end', () => {
-          console.log('FFmpeg processing finished');
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        });
-    });
-
-    // Start the FFmpeg process
-    ffmpegCommand.run();
-
     browser = await chromium.puppeteer.launch({
       args: [
         ...chromium.args,
@@ -112,34 +74,151 @@ async function captureVideo(url, outputPath) {
     page = await browser.newPage();
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // Wait for the wooden background to be visible
-    await page.waitForSelector('[data-testid="wooden-background"]', {
+    // Wait for the wooden background to be visible and get its dimensions
+    const woodenElement = await page.waitForSelector('[data-testid="wooden-background"]', {
       timeout: 30000,
       visible: true
     });
 
-    // Set up frame capture
-    let frameCount = 0;
-    while (frameCount < MAX_FRAMES) {
-      if (!monitor.check()) break;
+    const woodenBounds = await woodenElement.boundingBox();
+    if (!woodenBounds) {
+      throw new Error('Could not get wooden background bounds');
+    }
 
-      const screenshot = await page.screenshot({
-        type: 'jpeg',
-        quality: 70
-      });
+    // Calculate width and height ensuring even numbers
+    const width = Math.floor(woodenBounds.width / 2) * 2;
+    const height = Math.floor(woodenBounds.height / 2) * 2;
 
-      const success = stream.write(screenshot);
-      if (!success) {
-        await new Promise(resolve => stream.once('drain', resolve));
+    // Create clip configuration
+    const clipConfig = {
+      x: woodenBounds.x,
+      y: woodenBounds.y,
+      width,
+      height
+    };
+
+    console.log('Wooden background dimensions:', clipConfig);
+
+    // Create FFmpeg command with wooden background dimensions
+    const ffmpegCommand = ffmpeg()
+      .input(stream)
+      .inputFormat('jpeg_pipe')
+      .inputFPS(FPS)
+      .videoCodec('libx264')
+      .size(`${clipConfig.width}x${clipConfig.height}`) // Set size to match wooden background
+      .outputOptions([
+        '-preset ultrafast',
+        '-pix_fmt yuv420p',
+        '-profile:v baseline',
+        '-level 3.0',
+        '-maxrate 2000k',
+        '-bufsize 4000k',
+        '-crf 28',
+        '-g 14'
+      ])
+      .output(outputPath);
+
+    // Create a promise to track FFmpeg completion
+    const ffmpegPromise = new Promise((resolve, reject) => {
+      ffmpegCommand
+        .on('end', () => {
+          console.log('FFmpeg processing finished');
+          resolve();
+        })
+        .on('error', (err) => {
+          console.error('FFmpeg error:', err);
+          reject(err);
+        });
+    });
+
+    // Start the FFmpeg process
+    ffmpegCommand.run();
+
+    // Calculate total spreads based on location count and premium status
+    const effectiveLocationCount = isPremium ? locationCount : Math.min(locationCount, 5);
+    const totalSpreads = Math.ceil((effectiveLocationCount + 2) / 2);
+    
+    // Calculate frames needed per spread
+    const framesPerSpread = FPS * SECONDS_PER_SPREAD;
+    
+    // Process each spread
+    for (let spread = 0; spread < totalSpreads; spread++) {
+      console.log(`Processing spread ${spread + 1}/${totalSpreads}`);
+      
+      // Capture frames for current spread
+      for (let frame = 0; frame < framesPerSpread; frame++) {
+        if (!monitor.check()) break;
+
+        // Screenshot only the wooden background area
+        const screenshot = await page.screenshot({
+          type: 'jpeg',
+          quality: 80,
+          clip: clipConfig
+        });
+
+        const success = stream.write(screenshot);
+        if (!success) {
+          await new Promise(resolve => stream.once('drain', resolve));
+        }
+
+        // Small delay between frames
+        await new Promise(resolve => setTimeout(resolve, 1000 / FPS));
       }
 
-      frameCount++;
-      await new Promise(resolve => setTimeout(resolve, 100)); // 10 FPS
+      // If not the last spread, click the flip button
+      if (spread < totalSpreads - 1) {
+        console.log(`Flipping to next spread...`);
+        
+        let flipButtonFound = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const flipButton = await page.waitForSelector('[data-testid="flip-button"]', {
+              timeout: 5000,
+              visible: true
+            });
+
+            // Verify button is clickable
+            const buttonEnabled = await page.evaluate(button => {
+              const style = window.getComputedStyle(button);
+              return style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                style.opacity !== '0' &&
+                !button.disabled;
+            }, flipButton);
+
+            if (!buttonEnabled) {
+              throw new Error('Flip button found but not clickable');
+            }
+
+            await flipButton.click();
+            flipButtonFound = true;
+
+            // Wait for flip animation
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Wait for button to be ready again
+            await page.waitForFunction(() => {
+              const button = document.querySelector('[data-testid="flip-button"]');
+              return button && !button.disabled;
+            }, { timeout: 5000 });
+
+            break;
+          } catch (error) {
+            console.error(`Flip attempt ${attempt} failed:`, error);
+            if (attempt === 3) throw error;
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+
+        if (!flipButtonFound) {
+          throw new Error('Could not find or click flip button after all attempts');
+        }
+      }
     }
 
     // Close the stream and wait for FFmpeg to finish
     stream.end();
-    console.log(`Captured ${frameCount} frames, waiting for FFmpeg to finish...`);
+    console.log(`Captured frames for ${totalSpreads} spreads (${monitor.frameCount} total frames), waiting for FFmpeg to finish...`);
     await ffmpegPromise;
 
     // Verify the file exists and has content
@@ -176,19 +255,7 @@ module.exports.handler = async (event) => {
     const pageUrl = `${process.env.APP_URL}/playflipbook?userId=${mappbook_user_id}&displayname=${passport_display_name}&isPremium=${is_passport_video_premium_user}`;
 
     console.log('Starting video capture...', { outputPath, pageUrl });
-    cleanup = await captureVideo(pageUrl, outputPath);
-
-    // Verify the file exists after capture
-    try {
-      const stats = await fs.stat(outputPath);
-      console.log(`Video file size: ${stats.size} bytes`);
-      if (stats.size < 1000) {
-        throw new Error(`Video file too small: ${stats.size} bytes`);
-      }
-    } catch (error) {
-      console.error('Video file verification failed:', error);
-      throw new Error(`Video creation failed: ${error.message}`);
-    }
+    cleanup = await captureVideo(pageUrl, outputPath, locationCount, is_passport_video_premium_user);
 
     // Read and upload video
     const videoBuffer = await fs.readFile(outputPath);
