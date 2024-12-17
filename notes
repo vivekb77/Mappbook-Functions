@@ -28,7 +28,8 @@ aws lambda create-function \
 
 
 
-# PROD updating steps - after updating index or any other file 1. build docker image and push to registry 2. udpate the fuction to use new image from registry
+# PROD updating steps - after updating index or any other file 1. build docker image and push to registry 2. udpate the fuction to use new image from registry -- be in flipbook-video dir --if error pushing to ECR login to it first using command at the top
+
   docker buildx build \
   --builder lambda-builder \
   --platform linux/amd64 \
@@ -36,11 +37,6 @@ aws lambda create-function \
   -t 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest \
   --provenance=false \
   .
-
-aws lambda update-function-configuration \
-  --function-name flipbook-video \
-  --timeout 900 \
-  --memory-size 2048
 
 # update the function on every change
 aws lambda update-function-code \

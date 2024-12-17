@@ -12,10 +12,10 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('Supabase credentials are required');
 }
 const DEFAULT_LAMBDA_CONFIG = {
-  maxRetries: 3,
-  timeout: 25000, // Shorter timeout for Lambda
+  maxRetries: 2,
+  timeout: 500000,
   retryDelay: 1000,
-  maxMemoryMB: 512,
+  maxMemoryMB: 2048,
   debugLogging: process.env.DEBUG === 'true'
 };
 
@@ -41,7 +41,7 @@ function getWorkingDirectory() {
     try {
       const uniqueDir = `${shmDir}/lambda-${Date.now()}`;
       fs.mkdirSync(uniqueDir, { recursive: true, mode: 0o777 });
-      console.log('Successfully created directory in SharedMemory:', uniqueDir);
+      // console.log('Successfully created directory in SharedMemory:', uniqueDir);
       return uniqueDir;
     } catch (error) {
       console.error('Failed to create directory in SharedMemory:', error);
@@ -50,19 +50,19 @@ function getWorkingDirectory() {
 
   const uniqueTmpDir = `${tmpDir}/lambda-${Date.now()}`;
   fs.mkdirSync(uniqueTmpDir, { recursive: true, mode: 0o777 });
-  console.log('Using temporary directory:', uniqueTmpDir);
+  // console.log('Using temporary directory:', uniqueTmpDir);
   return uniqueTmpDir;
 }
 
 
-async function launchBrowserWithRetry(maxRetries = 3) {
+async function launchBrowserWithRetry(maxRetries = 2) {
   let browser;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // Don't need the process cleanup anymore since we're using chrome-aws-lambda
       // Remove the pkill commands as they can interfere with chrome-aws-lambda's management
-      
+
       if (global.gc) global.gc();
 
       browser = await chromium.puppeteer.launch({
@@ -70,12 +70,17 @@ async function launchBrowserWithRetry(maxRetries = 3) {
           ...chromium.args,
           '--disable-web-security',
           '--disable-features=IsolateOrigins',
-          '--disable-site-isolation-trials'
+          '--disable-site-isolation-trials',
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
         ],
         defaultViewport: chromium.defaultViewport,
         executablePath: await chromium.executablePath,
         headless: chromium.headless,
-        ignoreHTTPSErrors: true
+        ignoreHTTPSErrors: true,
+        protocolTimeout: 300000,
+        
+        browserWSEndpoint: undefined,
       });
 
       browser.on('disconnected', () => {
@@ -99,7 +104,7 @@ async function launchBrowserWithRetry(maxRetries = 3) {
         stack: error.stack,
         memory: process.memoryUsage()
       });
-      
+
       if (browser) {
         try {
           await browser.close();
@@ -107,7 +112,7 @@ async function launchBrowserWithRetry(maxRetries = 3) {
           console.error('Error closing browser:', e);
         }
       }
-      
+
       if (attempt === maxRetries) throw error;
       await new Promise(r => setTimeout(r, 2000));
     }
@@ -116,27 +121,27 @@ async function launchBrowserWithRetry(maxRetries = 3) {
 
 async function createPage(browser) {
   const page = await browser.newPage();
-  
+
   // Enhanced error handling
   page.on('error', err => console.error('Page error:', err));
   page.on('pageerror', err => console.error('Page error:', err));
-  page.on('console', msg => console.log('Page console:', msg.text()));
-  
+  // page.on('console', msg => console.log('Page console:', msg.text()));
+
   // Optimize page performance
   await page.setDefaultNavigationTimeout(30000);
   await page.setRequestInterception(true);
-  
+
   page.on('request', (request) => {
     request.continue();
   });
-  
+
   return page;
 }
 
 async function navigateWithRetry(page, url, options = {}) {
   const config = { ...DEFAULT_LAMBDA_CONFIG, ...options };
   const metrics = { attempts: 0, errors: [] };
-  
+
   // Monitor memory usage
   const memoryCheckInterval = setInterval(() => {
     const usedMemoryMB = process.memoryUsage().heapUsed / 1024 / 1024;
@@ -148,7 +153,7 @@ async function navigateWithRetry(page, url, options = {}) {
   try {
     for (let attempt = 1; attempt <= config.maxRetries; attempt++) {
       metrics.attempts++;
-      
+
       try {
         // Verify browser and page state before navigation
         const browser = page.browser();
@@ -167,7 +172,7 @@ async function navigateWithRetry(page, url, options = {}) {
             window.stop();
             if (typeof window.gc === 'function') window.gc();
           }),
-          new Promise((_, reject) => 
+          new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Memory cleanup timeout')), 5000)
           )
         ]);
@@ -182,7 +187,7 @@ async function navigateWithRetry(page, url, options = {}) {
             waitUntil: ['domcontentloaded'], // More conservative wait condition
             timeout: config.timeout
           }),
-          new Promise((_, reject) => 
+          new Promise((_, reject) =>
             setTimeout(() => reject(new Error('Navigation timeout')), config.timeout)
           )
         ]);
@@ -194,19 +199,19 @@ async function navigateWithRetry(page, url, options = {}) {
         // Verify the response and page state
         const status = response.status();
         const pageTitle = await page.title().catch(() => 'Unable to get title');
-        
+
         if (status >= 400) {
           throw new Error(`HTTP error status: ${status}, Page title: ${pageTitle}`);
         }
 
-        console.log({
-          event: 'navigation_success',
-          attempt,
-          url,
-          status,
-          title: pageTitle,
-          metrics
-        });
+        // console.log({
+        //   event: 'navigation_success',
+        //   attempt,
+        //   url,
+        //   status,
+        //   title: pageTitle,
+        //   metrics
+        // });
 
         return response;
 
@@ -232,9 +237,9 @@ async function navigateWithRetry(page, url, options = {}) {
         });
 
         // If this is a target/connection error, check browser state
-        if (error.message.includes('Target closed') || 
-            error.message.includes('Protocol error')) {
-          
+        if (error.message.includes('Target closed') ||
+          error.message.includes('Protocol error')) {
+
           // Check if browser is still alive
           const browser = page.browser();
           if (!browser?.isConnected()) {
@@ -261,7 +266,7 @@ async function navigateWithRetry(page, url, options = {}) {
 }
 
 // Screenshot capture with retry logic
-async function captureScreenshot(page, frameFile, clipConfig, maxRetries = 3) {
+async function captureScreenshot(page, frameFile, clipConfig, maxRetries = 2) {
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       await page.screenshot({
@@ -282,7 +287,7 @@ async function processVideo(framesDir, outputPath, fps) {
   // First verify we have enough frames
   const files = fs.readdirSync(framesDir);
   const pngFiles = files.filter(f => f.endsWith('.png'));
-  console.log(`Found ${pngFiles.length} PNG files for video processing`);
+  // console.log(`Found ${pngFiles.length} PNG files for video processing`);
 
   if (pngFiles.length === 0) {
     throw new Error('No frames found for video processing');
@@ -309,8 +314,8 @@ async function processVideo(framesDir, outputPath, fps) {
   }
 
   // Log first and last frame for verification
-  console.log('First frame:', pngFiles[0]);
-  console.log('Last frame:', pngFiles[pngFiles.length - 1]);
+  // console.log('First frame:', pngFiles[0]);
+  // console.log('Last frame:', pngFiles[pngFiles.length - 1]);
 
   return new Promise((resolve, reject) => {
     let progress = 0;
@@ -332,14 +337,14 @@ async function processVideo(framesDir, outputPath, fps) {
       ])
       .output(outputPath)
       .on('start', command => {
-        console.log('FFmpeg command:', command);
+        // console.log('FFmpeg command:', command);
       })
       .on('progress', (progressInfo) => {
         if (progressInfo.percent) {
           const newProgress = Math.floor(progressInfo.percent);
           if (newProgress > progress) {
             progress = newProgress;
-            console.log(`Processing: ${progress}% done`, progressInfo);
+            // console.log(`Processing: ${progress}% done`, progressInfo);
           }
         }
       })
@@ -350,8 +355,8 @@ async function processVideo(framesDir, outputPath, fps) {
             console.error('Error probing output video:', err);
             return reject(err);
           }
-          console.log('Output video metadata:', metadata);
-          console.log('Video duration:', metadata.format.duration);
+          // console.log('Output video metadata:', metadata);
+          // console.log('Video duration:', metadata.format.duration);
           resolve();
         });
       })
@@ -364,9 +369,16 @@ async function processVideo(framesDir, outputPath, fps) {
   });
 }
 
+async function performGarbageCollection() {
+  if (global.gc) {
+    global.gc();
+  }
+  // Force V8 garbage collection
+  await new Promise(resolve => setTimeout(resolve, 100));
+}
 
 module.exports.handler = async (event) => {
-  
+
   if (!event.body || typeof event.body !== 'string') {
     return {
       statusCode: 400,
@@ -380,7 +392,7 @@ module.exports.handler = async (event) => {
     };
   }
 
-  const { locationCount, mappbook_user_id } = JSON.parse(event.body);
+  const { locationCount, mappbook_user_id, passport_display_name, is_passport_video_premium_user } = JSON.parse(event.body);
   const baseDir = getWorkingDirectory();
   const framesDir = path.join(baseDir, 'frames');
   const outputPath = path.join(baseDir, 'output.mp4');
@@ -393,23 +405,32 @@ module.exports.handler = async (event) => {
 
     // Launch browser with enhanced configuration
     browser = await launchBrowserWithRetry(3);
-    console.log('Browser launched successfully');
-
+    // console.log('Browser launched successfully');
+    browserKeepAlive = setInterval(async () => {
+      try {
+        const pages = await browser.pages();
+        if (!pages || !browser.isConnected()) {
+          throw new Error('Browser connection lost');
+        }
+      } catch (error) {
+        console.error('Browser keepalive check failed:', error);
+      }
+    }, 30000);
     // Create page with optimized settings
     page = await createPage(browser);
     console.log('Page created successfully');
 
-    const pageUrl = `${process.env.APP_URL}/playflipbook?userId=${mappbook_user_id}`;
-    
+    const pageUrl = `${process.env.APP_URL}/playflipbook?userId=${mappbook_user_id}&displayname=${passport_display_name}&isPremium=${is_passport_video_premium_user}`;
+
     // Navigate with enhanced error handling
     await navigateWithRetry(page, pageUrl, {
-      maxRetries: 3,
+      maxRetries: 2,
       timeout: 30000,
       retryDelay: 2000
     });
 
     // Wait for wooden background with enhanced error handling
-    console.log('Waiting for wooden background...');
+    // console.log('Waiting for wooden background...');
     let woodenElement;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
@@ -448,13 +469,24 @@ module.exports.handler = async (event) => {
     const width = Math.floor(woodenBounds.width / 2) * 2;
     const height = Math.floor(woodenBounds.height / 2) * 2;
 
-    // Batch process frames
-    const fps = 24;
-    const secondsPerSpread = 1;
-    const totalSpreads = Math.ceil((locationCount + 2) / 2);
-    const batchSize = 5; // Process 5 frames at a time
 
-    console.log(`Processing ${totalSpreads} spreads...`);
+
+    // Batch process frames
+    const fps = 14;
+    const secondsPerSpread = 2;
+
+    let effectiveLocationCount;
+    if (is_passport_video_premium_user) {
+      effectiveLocationCount = locationCount;
+    } else {
+      effectiveLocationCount = Math.min(locationCount, 5); // Limit to 5 locations for non-premium users
+    }
+
+    const totalSpreads = Math.ceil((effectiveLocationCount + 2) / 2);
+
+    const batchSize = 3; // Process 5 frames at a time
+
+    // console.log(`Processing ${totalSpreads} spreads...`);
 
     // Inside the spread processing loop
     // At the start of the main function, add:
@@ -463,9 +495,11 @@ module.exports.handler = async (event) => {
     // In the frame processing loop, update the frame numbering:
     for (let spread = 0; spread < totalSpreads; spread++) {
       console.log(`Processing spread ${spread + 1}/${totalSpreads}`);
-
+      if (spread % 2 === 0) {
+        await performGarbageCollection();
+      }
       const framesNeeded = fps * secondsPerSpread;
-      console.log(`Capturing ${framesNeeded} frames for spread ${spread + 1}`);
+      // console.log(`Capturing ${framesNeeded} frames for spread ${spread + 1}`);
 
       for (let i = 0; i < framesNeeded; i += batchSize) {
         const promises = [];
@@ -487,7 +521,7 @@ module.exports.handler = async (event) => {
           promises.push(
             captureScreenshot(page, frameFile, clipConfig)
               .then(() => {
-                console.log(`Captured frame ${currentFrameNumber}`);
+                // console.log(`Captured frame ${currentFrameNumber}`);
                 return currentFrameNumber;
               })
               .catch(error => {
@@ -502,12 +536,12 @@ module.exports.handler = async (event) => {
         const filesAfterBatch = fs.readdirSync(framesDir)
           .filter(f => f.endsWith('.png'))
           .sort();
-        console.log(`PNG files in directory after batch:`, filesAfterBatch.length);
-        console.log('Last frame in batch:', filesAfterBatch[filesAfterBatch.length - 1]);
+        // console.log(`PNG files in directory after batch:`, filesAfterBatch.length);
+        // console.log('Last frame in batch:', filesAfterBatch[filesAfterBatch.length - 1]);
       }
 
       if (spread < totalSpreads - 1) {
-        console.log(`Looking for flip button after spread ${spread + 1}...`);
+        // console.log(`Looking for flip button after spread ${spread + 1}...`);
 
         // First verify the page state
         const pageState = await page.evaluate(() => {
@@ -520,12 +554,12 @@ module.exports.handler = async (event) => {
           };
         });
 
-        console.log('Page state:', pageState);
+        // console.log('Page state:', pageState);
 
         let flipButtonFound = false;
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
-            console.log(`Flip button attempt ${attempt}/3`);
+            // console.log(`Flip button attempt ${attempt}/3`);
             const flipButton = await page.waitForSelector('[data-testid="flip-button"]', {
               timeout: 30000,
               visible: true
@@ -557,7 +591,7 @@ module.exports.handler = async (event) => {
               return button && !button.disabled;
             }, { timeout: 5000 });
 
-            console.log('Flip button clicked successfully');
+            // console.log('Flip button clicked successfully');
             break;
           } catch (error) {
             console.error(`Flip attempt ${attempt} failed:`, error);
@@ -592,7 +626,7 @@ module.exports.handler = async (event) => {
       console.log('Starting video processing...');
       await processVideo(framesDir, outputPath, fps);
 
-      console.log('Video processing complete, uploading to Supabase...');
+      // console.log('Video processing complete, uploading to Supabase...');
       const videoBuffer = fs.readFileSync(outputPath);
       const videoFileName = `flipbook_${mappbook_user_id}_${Date.now()}.mp4`;
 
@@ -602,7 +636,7 @@ module.exports.handler = async (event) => {
 
       while (!uploadSuccess && uploadAttempt < 3) {
         try {
-          console.log(`Upload attempt ${uploadAttempt + 1}/3`);
+          // console.log(`Upload attempt ${uploadAttempt + 1}/3`);
           const { data, error } = await supabase
             .storage
             .from('flipbook-videos')
@@ -620,7 +654,7 @@ module.exports.handler = async (event) => {
             .getPublicUrl(videoFileName);
 
           // Database insert with retry
-          console.log('Inserting record into database...');
+          // console.log('Inserting record into database...');
           let dbAttempt = 0;
           let dbSuccess = false;
 
@@ -638,7 +672,7 @@ module.exports.handler = async (event) => {
               console.log('Database insert successful');
             } catch (error) {
               dbAttempt++;
-              console.error(`Database insert attempt ${dbAttempt} failed:`, error);
+              // console.error(`Database insert attempt ${dbAttempt} failed:`, error);
               if (dbAttempt === 3) throw error;
               await new Promise(resolve => setTimeout(resolve, 3000));
             }
@@ -686,7 +720,7 @@ module.exports.handler = async (event) => {
         console.error('Error closing page:', e);
       }
     }
-    
+
     if (browser) {
       try {
         await browser.close();
@@ -700,6 +734,10 @@ module.exports.handler = async (event) => {
       fs.rmSync(baseDir, { recursive: true, force: true });
     } catch (e) {
       console.error('Error cleaning up directory:', e);
+    }
+
+    if (browserKeepAlive) {
+      clearInterval(browserKeepAlive);
     }
   }
 };
