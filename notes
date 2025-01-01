@@ -1,26 +1,25 @@
-
-  # Create ECR repository
-aws ecr create-repository --repository-name flipbook-lambda --image-scanning-configuration scanOnPush=true
-
-
-docker buildx build --platform linux/amd64 -t flipbook-lambda .
-
 # Login to ECR
 aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 442426858133.dkr.ecr.us-east-1.amazonaws.com
 
+  # Create ECR repository
+aws ecr create-repository --repository-name map-animation-lambda --image-scanning-configuration scanOnPush=true
+
+cd mappbook-video
+docker buildx build --platform linux/amd64 -t map-animation-lambda .
+
 # Tag the image
 
-docker tag flipbook-lambda:latest 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+docker tag map-animation-lambda:latest 442426858133.dkr.ecr.us-east-1.amazonaws.com/map-animation-lambda:latest
 
 # Push the image
-docker push 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+docker push 442426858133.dkr.ecr.us-east-1.amazonaws.com/map-animation-lambda:latest
 
 # Create Lambda function (adjust memory and timeout as needed)
 aws lambda create-function \
-  --function-name flipbook-video \
+  --function-name map-animation-video \
   --package-type Image \
-  --code ImageUri=442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest \
-  --role arn:aws:iam::442426858133:role/flipbook-lambda-role \
+  --code ImageUri=442426858133.dkr.ecr.us-east-1.amazonaws.com/map-animation-lambda:latest \
+  --role arn:aws:iam::442426858133:role/remotion-lambda-role \
   --memory-size 3000 \
   --timeout 300 \
   --environment "Variables={}" \
@@ -28,20 +27,20 @@ aws lambda create-function \
 
 
 
-# PROD updating steps - after updating index or any other file 1. build docker image and push to registry 2. udpate the fuction to use new image from registry -- be in flipbook-video dir --if error pushing to ECR login to it first using command at the top
+# PROD updating steps - after updating index or any other file 1. build docker image and push to registry 2. udpate the fuction to use new image from registry -- be in map-animation-video dir --if error pushing to ECR login to it first using command at the top
 
   docker buildx build \
   --builder lambda-builder \
   --platform linux/amd64 \
   --push \
-  -t 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest \
+  -t 442426858133.dkr.ecr.us-east-1.amazonaws.com/map-animation-lambda:latest \
   --provenance=false \
   .
 
 # update the function on every change
 aws lambda update-function-code \
-  --function-name flipbook-video \
-  --image-uri 442426858133.dkr.ecr.us-east-1.amazonaws.com/flipbook-lambda:latest
+  --function-name map-animation-video \
+  --image-uri 442426858133.dkr.ecr.us-east-1.amazonaws.com/map-animation-lambda:latest
 
 
 
