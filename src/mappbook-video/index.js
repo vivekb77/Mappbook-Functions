@@ -1,3 +1,4 @@
+//index.js
 const { createClient } = require('@supabase/supabase-js');
 const chromium = require('chrome-aws-lambda');
 const ffmpeg = require('fluent-ffmpeg');
@@ -33,7 +34,7 @@ class ResourceMonitor {
     const memoryUsage = process.memoryUsage();
     const usedMemoryMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
     const memoryLimitMB = MEMORY_LIMIT - MEMORY_BUFFER;
-    
+
     if (usedMemoryMB > memoryLimitMB * this.warningThreshold) {
       throw new Error(`Memory threshold exceeded: ${usedMemoryMB}MB used of ${memoryLimitMB}MB limit`);
     }
@@ -89,14 +90,14 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
       .videoCodec('libx264')
       // .size(`${clipConfig.width}x${clipConfig.height}`) // Set size to match wooden background
       .outputOptions([
-      '-preset medium',     // Change from ultrafast to medium for better quality
-    '-pix_fmt yuv420p',
-    '-profile:v high',    // Change from baseline to high profile
-    '-level 4.0',         // Increase level
-    '-maxrate 4000k',     // Increase from 2000k
-    '-bufsize 8000k',     // Increase from 4000k
-    '-crf 23',           // Lower CRF value (23 instead of 28) for better quality
-    '-g 14'
+        '-preset medium',     // Change from ultrafast to medium for better quality
+        '-pix_fmt yuv420p',
+        '-profile:v high',    // Change from baseline to high profile
+        '-level 4.0',         // Increase level
+        '-maxrate 4000k',     // Increase from 2000k
+        '-bufsize 8000k',     // Increase from 4000k
+        '-crf 23',           // Lower CRF value (23 instead of 28) for better quality
+        '-g 14'
       ])
       .output(outputPath);
 
@@ -117,16 +118,17 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
     ffmpegCommand.run();
 
     // Calculate total spreads based on location count and premium status
+
     const effectiveLocationCount = isPremium ? locationCount : Math.min(locationCount, 5);
-    const totalSpreads = Math.ceil((effectiveLocationCount + 2) / 2);
-    
+    const totalSpreads = Math.ceil((effectiveLocationCount + 4) / 2) + 2;
+
     // Calculate frames needed per spread
     const framesPerSpread = FPS * SECONDS_PER_SPREAD;
-    
+
     // Process each spread
     for (let spread = 0; spread < totalSpreads; spread++) {
       console.log(`Processing spread ${spread + 1}/${totalSpreads}`);
-      
+
       // Capture frames for current spread
       for (let frame = 0; frame < framesPerSpread; frame++) {
         if (!monitor.check()) break;
@@ -155,7 +157,7 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
       // If not the last spread, click the flip button
       if (spread < totalSpreads - 1) {
         console.log(`Flipping to next spread...`);
-        
+
         let flipButtonFound = false;
         for (let attempt = 1; attempt <= 3; attempt++) {
           try {
@@ -182,7 +184,7 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
 
             // Wait for flip animation
             await new Promise(resolve => setTimeout(resolve, 1000));
-            
+
             // Wait for button to be ready again
             await page.waitForFunction(() => {
               const button = document.querySelector('[data-testid="flip-button"]');
@@ -230,14 +232,14 @@ async function captureVideo(url, outputPath, locationCount, isPremium) {
 
 module.exports.handler = async (event) => {
   let cleanup = null;
-  
+
   try {
     if (!event.body) {
       throw new Error('Missing request body');
     }
 
     const { locationCount, mappbook_user_id, passport_display_name, is_passport_video_premium_user } = JSON.parse(event.body);
-    
+
     const outputPath = path.join('/tmp', `output-${Date.now()}.mp4`);
     const pageUrl = `${process.env.APP_URL}/playflipbook?userId=${mappbook_user_id}&displayname=${passport_display_name}&isPremium=${is_passport_video_premium_user}`;
 
@@ -281,9 +283,9 @@ module.exports.handler = async (event) => {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       },
-      body: JSON.stringify({ 
-        success: true, 
-        video_url: publicUrl 
+      body: JSON.stringify({
+        success: true,
+        video_url: publicUrl
       })
     };
 
@@ -295,16 +297,16 @@ module.exports.handler = async (event) => {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*'
       },
-      body: JSON.stringify({ 
-        success: false, 
-        error: error.message 
+      body: JSON.stringify({
+        success: false,
+        error: error.message
       })
     };
   } finally {
     if (cleanup) {
       await cleanup().catch(console.error);
     }
-    
+
     // Clean up temp files
     try {
       const files = await fs.readdir('/tmp');

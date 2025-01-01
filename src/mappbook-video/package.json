@@ -1,7 +1,7 @@
 {
-  "name": "flipbook-video",
+  "name": "mappbook-video",
   "version": "1.0.0",
-  "description": "Lambda function for creating flipbook videos",
+  "description": "Lambda function for creating mappbook videos",
   "main": "index.js",
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
