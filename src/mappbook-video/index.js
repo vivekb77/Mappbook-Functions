@@ -18,7 +18,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 // Configure limits
 const MEMORY_LIMIT = parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || '1024', 10);
 const MEMORY_BUFFER = 128;
-const FPS = 24;
 
 class ResourceMonitor {
   constructor(warningThreshold = 0.8) {
@@ -60,9 +59,11 @@ async function captureVideo(url, outputPath) {
   let page = null;
   const monitor = new ResourceMonitor();
   const stream = new PassThrough();
-  const RECORDING_DURATION = 120000; // 2 minutes in milliseconds
+  const RECORDING_DURATION = 60000; // 1 minute
+  const TARGET_FPS = 12; // Reduced target FPS to be more realistic for Lambda
 
   try {
+    // Browser setup remains the same...
     browser = await chromium.puppeteer.launch({
       args: [...chromium.args, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--single-process'],
       defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
@@ -78,20 +79,21 @@ async function captureVideo(url, outputPath) {
     const mapElement = await page.waitForSelector('div[class*="mapboxgl-map"]');
     console.log('Map element found');
 
+    // Initialize FFmpeg with lower FPS target
     const ffmpegCommand = ffmpeg()
       .input(stream)
       .inputFormat('jpeg_pipe')
-      .inputFPS(FPS)
+      .inputFPS(TARGET_FPS)
       .videoCodec('libx264')
       .outputOptions([
-        '-preset medium',
+        '-preset ultrafast',
         '-pix_fmt yuv420p',
-        '-profile:v high',
-        '-level 4.0',
-        '-maxrate 4000k',
-        '-bufsize 8000k',
-        '-crf 23',
-        '-g 14'
+        '-profile:v baseline',
+        '-level 3.0',
+        '-maxrate 2000k',
+        '-bufsize 4000k',
+        '-crf 28',
+        '-g 12'
       ])
       .output(outputPath);
 
@@ -102,6 +104,7 @@ async function captureVideo(url, outputPath) {
     ffmpegCommand.run();
     console.log('FFmpeg started');
 
+    // Start flight
     const startFlightButton = await page.waitForSelector('[data-testid="start-flight-button"]', {
       timeout: 5000,
       visible: true
@@ -112,52 +115,38 @@ async function captureVideo(url, outputPath) {
     const startTime = Date.now();
     let frameCount = 0;
 
-    // Create a promise that resolves when recording is complete
-    await new Promise((resolve, reject) => {
-      const captureFrame = async () => {
-        try {
-          const currentTime = Date.now();
-          if (currentTime - startTime >= RECORDING_DURATION) {
-            console.log('Recording duration reached');
-            return resolve();
-          }
+    // Capture frames as fast as possible
+    while (Date.now() - startTime < RECORDING_DURATION) {
+      if (!monitor.check()) break;
 
-          const screenshot = await mapElement.screenshot({
-            type: 'jpeg',
-            quality: 100
-          });
-          console.log(`Frame ${frameCount + 1} captured`);
+      try {
+        const screenshot = await mapElement.screenshot({
+          type: 'jpeg',
+          quality: 70  // Further reduced quality
+        });
 
-          const success = stream.write(screenshot);
-          if (!success) {
-            await new Promise(resolve => stream.once('drain', resolve));
-          }
-
-          frameCount++;
-
-          if (frameCount % 24 === 0) {
-            const elapsed = (currentTime - startTime) / 1000;
-            const remainingSeconds = Math.round((startTime + RECORDING_DURATION - currentTime) / 1000);
-            console.log(`Progress: ${frameCount} frames, ${elapsed.toFixed(1)}s elapsed, ${remainingSeconds}s remaining`);
-          }
-
-          // Schedule next frame
-          setTimeout(captureFrame, 1000 / FPS);
-        } catch (error) {
-          reject(error);
+        const success = stream.write(screenshot);
+        if (!success) {
+          await new Promise(resolve => stream.once('drain', resolve));
         }
-      };
 
-      // Start the capture process
-      captureFrame().catch(reject);
-    });
+        frameCount++;
+        
+        if (frameCount % 10 === 0) {
+          console.log(`Captured ${frameCount} frames, elapsed: ${((Date.now() - startTime)/1000).toFixed(1)}s`);
+        }
+
+      } catch (error) {
+        console.error('Frame capture error:', error);
+        continue;
+      }
+    }
 
     const totalTime = (Date.now() - startTime) / 1000;
-    console.log(`Capture complete: ${frameCount} frames over ${totalTime.toFixed(1)} seconds`);
+    console.log(`Capture complete: ${frameCount} frames over ${totalTime} seconds`);
 
     stream.end();
     console.log('Waiting for FFmpeg...');
-
     await ffmpegPromise;
 
     const stats = await fs.stat(outputPath);
