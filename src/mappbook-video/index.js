@@ -19,7 +19,6 @@ const supabase = createClient(supabaseUrl, supabaseKey);
 const MEMORY_LIMIT = parseInt(process.env.AWS_LAMBDA_FUNCTION_MEMORY_SIZE || '1024', 10);
 const MEMORY_BUFFER = 128;
 const FPS = 24;
-const SECONDS_PER_SPREAD = 2.5;
 
 class ResourceMonitor {
   constructor(warningThreshold = 0.8) {
@@ -56,57 +55,29 @@ async function waitForMapLoad(page) {
   );
 }
 
-async function waitForElement(page, selector, options = {}) {
-  const element = await page.waitForSelector(selector, {
-    visible: true,
-    timeout: 30000,
-    ...options
-  });
-  return element;
-}
-
 async function captureVideo(url, outputPath) {
   let browser = null;
   let page = null;
   const monitor = new ResourceMonitor();
   const stream = new PassThrough();
+  const RECORDING_DURATION = 120000; // 2 minutes in milliseconds
 
   try {
     browser = await chromium.puppeteer.launch({
-      args: [
-        ...chromium.args,
-        '--no-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--single-process'
-      ],
-      defaultViewport: {
-        width: 1280,
-        height: 720,
-        deviceScaleFactor: 1,
-      },
+      args: [...chromium.args, '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--single-process'],
+      defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
       executablePath: await chromium.executablePath,
       headless: chromium.headless
     });
 
     page = await browser.newPage();
+    console.log('Navigating to page...');
     await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 });
 
-    // Wait for map and controls to be ready
     await waitForMapLoad(page);
-    // await waitForElement(page, '[data-testid="wooden-background"]');
-    
-    // Wait for animation data to load
-    // await page.waitForFunction(
-    //   () => !document.querySelector('.loading-animation'),
-    //   { timeout: 30000 }
-    // );
+    const mapElement = await page.waitForSelector('div[class*="mapboxgl-map"]');
+    console.log('Map element found');
 
-    // Find and click the Start Flight button
-    const startFlightButton = await waitForElement(page, 'button:has-text("Start Flight")');
-    await startFlightButton.click();
-
-    // Create FFmpeg command
     const ffmpegCommand = ffmpeg()
       .input(stream)
       .inputFormat('jpeg_pipe')
@@ -124,43 +95,74 @@ async function captureVideo(url, outputPath) {
       ])
       .output(outputPath);
 
-    // Create a promise to track FFmpeg completion
     const ffmpegPromise = new Promise((resolve, reject) => {
-      ffmpegCommand
-        .on('end', () => {
-          console.log('FFmpeg processing finished');
-          resolve();
-        })
-        .on('error', (err) => {
-          console.error('FFmpeg error:', err);
-          reject(err);
-        });
+      ffmpegCommand.on('end', resolve).on('error', reject);
     });
 
-    // Start the FFmpeg process
     ffmpegCommand.run();
+    console.log('FFmpeg started');
 
-    // Wait for animation to complete
-    await page.waitForFunction(
-      () => !document.querySelector('button:has-text("Cancel Flight")'),
-      { timeout: 120000 } // 2 minute timeout for animation
-    );
-
-    // Get the wooden background element for screenshots
-    const woodenElement = await page.waitForSelector('div[class*="mapboxgl-map"]');
-
-    // Capture the final state
-    const screenshot = await woodenElement.screenshot({
-      type: 'jpeg',
-      quality: 100
+    const startFlightButton = await page.waitForSelector('[data-testid="start-flight-button"]', {
+      timeout: 5000,
+      visible: true
     });
-    stream.write(screenshot);
-    stream.end();
+    await startFlightButton.click();
+    console.log('Flight started');
 
-    console.log('Waiting for FFmpeg to finish...');
+    const startTime = Date.now();
+    let frameCount = 0;
+
+    // Create a promise that resolves when recording is complete
+    await new Promise((resolve, reject) => {
+      const captureFrame = async () => {
+        try {
+          const currentTime = Date.now();
+          if (currentTime - startTime >= RECORDING_DURATION) {
+            console.log('Recording duration reached');
+            return resolve();
+          }
+
+          const screenshot = await mapElement.screenshot({
+            type: 'jpeg',
+            quality: 100
+          });
+          console.log(`Frame ${frameCount + 1} captured`);
+
+          const success = stream.write(screenshot);
+          if (!success) {
+            await new Promise(resolve => stream.once('drain', resolve));
+          }
+
+          frameCount++;
+
+          if (frameCount % 24 === 0) {
+            const elapsed = (currentTime - startTime) / 1000;
+            const remainingSeconds = Math.round((startTime + RECORDING_DURATION - currentTime) / 1000);
+            console.log(`Progress: ${frameCount} frames, ${elapsed.toFixed(1)}s elapsed, ${remainingSeconds}s remaining`);
+          }
+
+          // Schedule next frame
+          setTimeout(captureFrame, 1000 / FPS);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      // Start the capture process
+      captureFrame().catch(reject);
+    });
+
+    const totalTime = (Date.now() - startTime) / 1000;
+    console.log(`Capture complete: ${frameCount} frames over ${totalTime.toFixed(1)} seconds`);
+
+    stream.end();
+    console.log('Waiting for FFmpeg...');
+
     await ffmpegPromise;
 
     const stats = await fs.stat(outputPath);
+    console.log(`Video file created: ${stats.size} bytes`);
+
     if (stats.size < 1000) {
       throw new Error(`Video file too small: ${stats.size} bytes`);
     }
@@ -169,7 +171,9 @@ async function captureVideo(url, outputPath) {
       if (page) await page.close().catch(console.error);
       if (browser) await browser.close().catch(console.error);
     };
+
   } catch (error) {
+    console.error('Capture error:', error);
     if (page) await page.close().catch(console.error);
     if (browser) await browser.close().catch(console.error);
     stream.destroy();
@@ -179,16 +183,21 @@ async function captureVideo(url, outputPath) {
 
 module.exports.handler = async (event) => {
   let cleanup = null;
+  let animation_video_id = null;
 
   try {
     if (!event.body) {
       throw new Error('Missing request body');
     }
 
-    const { mappbook_user_id, animation_video_id } = JSON.parse(event.body);
+    const parsedBody = JSON.parse(event.body);
+    const { animation_video_id: videoId } = parsedBody;
+    animation_video_id = videoId; // Store in outer scope for catch block
 
-    if (!mappbook_user_id || !animation_video_id) {
-      throw new Error('Missing required parameters: mappbook_user_id and animation_video_id');
+    console.log('Animation video id is - '+animation_video_id)
+
+    if ( !animation_video_id) {
+      throw new Error('Missing required parameters: animation_video_id');
     }
 
     const outputPath = path.join('/tmp', `output-${Date.now()}.mp4`);
@@ -204,7 +213,7 @@ module.exports.handler = async (event) => {
     console.log('Uploading video to Supabase...');
     const { data, error } = await supabase
       .storage
-      .from('animation-videos')
+      .from('map-animation-videos')
       .upload(videoFileName, videoBuffer, {
         contentType: 'video/mp4',
         upsert: true
@@ -243,14 +252,19 @@ module.exports.handler = async (event) => {
   } catch (error) {
     console.error('Handler failed:', error);
     
-    // Update the Animation_Video record with error status
+    // Only attempt to update the record if we have a valid animation_video_id
     if (animation_video_id) {
-      await supabase
-        .from('Animation_Video')
-        .update({
-          video_generation_status: false,
-        })
-        .eq('animation_video_id', animation_video_id);
+      try {
+        await supabase
+          .from('Animation_Video')
+          .update({
+            video_generation_status: false,
+            error_message: error.message // Optional: store error message
+          })
+          .eq('animation_video_id', animation_video_id);
+      } catch (updateError) {
+        console.error('Failed to update error status:', updateError);
+      }
     }
 
     return {
